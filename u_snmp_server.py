@@ -1,7 +1,5 @@
 from micropython import const
-from collections.abc import Iterable
-import functools
-import fnmatch
+import u_snmp_utils
 import types
 import struct
 import socket
@@ -11,7 +9,7 @@ from contextlib import closing
 from io import StringIO
 
 
-PY3 = const(sys.version_info[0] == 3)
+PY3 = const(True)
 
 # ASN.1 tags
 ASN1_BOOLEAN = const(0x01)
@@ -561,7 +559,7 @@ def boolean(value):
 
 def integer(value, enum=None):
     """Get Integer"""
-    if enum and isinstance(enum, Iterable) and value not in enum:
+    if enum and isinstance(enum, list) and value not in enum:
         raise WrongValueError(
             'Integer value {} is outside the range of enum values'.format(value))
     if not (-2147483648 <= value <= 2147483647):
@@ -711,7 +709,7 @@ def oid_cmp(oid1, oid2):
 
 def get_next(oids, oid):
     """Get next OID from the OIDs list"""
-    for val in sorted(oids, key=functools.cmp_to_key(oid_cmp)):
+    for val in sorted(oids, key=u_snmp_utils.cmp_to_key(oid_cmp)):
         # return first if compared with empty oid
         if not oid:
             return val
@@ -745,7 +743,7 @@ def find_oid_and_value_with_wildcard(oids, oid):
     wildcard_keys = [x for x in oids.keys() if '*' in x or '?' in x]
     out = []
     for wck in wildcard_keys:
-        if fnmatch.filter([oid], wck):
+        if u_snmp_utils.filter([oid], wck):
             value = oids[wck](oid)
             out.append((wck, value,))
     return out
