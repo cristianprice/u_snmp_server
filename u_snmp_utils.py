@@ -171,4 +171,4 @@ def translate(pat):
             add(f"(?=(?P<g{groupnum}>.*?{fixed}))(?P=g{groupnum})")
     assert i == n
     res = "".join(res)
-    return fr'(?s:{res})\Z'
+    return '(?s:{})\\Z'.format(res)

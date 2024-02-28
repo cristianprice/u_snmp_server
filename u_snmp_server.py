@@ -171,7 +171,7 @@ def timeticks_to_str(ticks):
     minutes, rem3 = divmod(rem2, 60 * 100)
     seconds, milliseconds = divmod(rem3, 100)
     ending = 's' if days > 1 else ''
-    days_fmt = '{} day{}, '.format(days, ending) if days > 0 else ''
+    days_fmt = "{} day{}, ".format(days, ending) if days > 0 else ""
     return '{}{:-02}:{:-02}:{:-02}.{:-02}'.format(days_fmt, hours, minutes, seconds, milliseconds)
 
 
