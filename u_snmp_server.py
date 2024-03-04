@@ -563,7 +563,7 @@ def boolean(value):
 
 def integer(value, enum=None):
     """Get Integer"""
-    if enum and isinstance(enum, Iterable) and value not in enum:
+    if enum and isinstance(enum, list) and value not in enum:
         raise WrongValueError(
             'Integer value {} is outside the range of enum values'.format(value))
     if not (-2147483648 <= value <= 2147483647):
@@ -662,7 +662,7 @@ def bmp_string(value):
 
 def ip_address(value):
     """Get IPAddress"""
-    return write_tv(ASN1_IPADDRESS, socket.inet_aton(value))
+    return write_tv(ASN1_IPADDRESS, socket.inet_pton(value))
 
 
 def timeticks(value):
@@ -1046,7 +1046,7 @@ def main():
     args = parser.parse_args()
 
     if args.debug:
-        logger.setLevel(logging.DEBUG)
+        logger.setLevel(logger.DEBUG)
 
     # work as an echo server if no config is passed
     oids = {

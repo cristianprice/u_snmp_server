@@ -1,7 +1,7 @@
 from micropython import const
 
 
-LOGGING = const(0)
+DEBUG = const(0)
 
 
 def debug(*args, **kwargs) -> None:
@@ -9,6 +9,10 @@ def debug(*args, **kwargs) -> None:
 
 
 def warning(*args, **kwargs) -> None:
+    print(*args, **kwargs)
+
+
+def error(*args, **kwargs) -> None:
     print(*args, **kwargs)
 
 
