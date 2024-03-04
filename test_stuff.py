@@ -1,14 +1,20 @@
+import socket
 
 
-def timeticks_to_str(ticks):
-    """Return "days, hours, minutes, seconds and ms" string from ticks"""
-    days, rem1 = divmod(ticks, 24 * 60 * 60 * 100)
-    hours, rem2 = divmod(rem1, 60 * 60 * 100)
-    minutes, rem3 = divmod(rem2, 60 * 100)
-    seconds, milliseconds = divmod(rem3, 100)
-    ending = 's' if days > 1 else ''
-    days_fmt = "{} day{}, ".format(days, ending) if days > 0 else ""
-    return '{}{:-02}:{:-02}:{:-02}.{:-02}'.format(days_fmt, hours, minutes, seconds, milliseconds)
+def udp_server(host='0.0.0.0', port=12345):
+    # Create a new socket using the given network family and socket type
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    ai = socket.getaddrinfo(host, port)
+    print(ai)
+    s.bind(ai[0][-1])
+
+    print('UDP Server listening on {}:{}'.format(host, port))
+
+    while True:
+        # Receive data from the socket, up to a maximum of 1024 bytes
+        data, addr = s.recvfrom(1024)
+        print('Received message:', data, 'from:', addr)
 
 
-print(timeticks_to_str(1199388))
+# Start the server
+udp_server()

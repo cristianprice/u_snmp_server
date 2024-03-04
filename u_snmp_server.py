@@ -1,99 +1,84 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-"""
-Simple SNMP server in pure Python
-"""
-
-from __future__ import print_function
-
 import argparse
-import fnmatch
-import functools
-import logging
+import u_fnmatch as fnmatch
+import u_functools as functools
 import socket
-import string
+import u_string as string
 import struct
 import sys
-import types
-from contextlib import closing
+import u_types as types
+from u_contextlib import closing
+from micropython import const
+import u_simple_loggin as logger
 
-try:
-    from collections import Iterable
-except ImportError:
-    from collections.abc import Iterable
-
-try:
-    from StringIO import StringIO
-except ImportError:
-    from io import StringIO
+from io import StringIO
 
 __version__ = '1.0.5'
 
-PY3 = sys.version_info[0] == 3
-
-logging.basicConfig(format='[%(levelname)s] %(message)s')
-logger = logging.getLogger()
-logger.setLevel(logging.WARNING)
+PY3 = const(3)
 
 # ASN.1 tags
-ASN1_BOOLEAN = 0x01
-ASN1_INTEGER = 0x02
-ASN1_BIT_STRING = 0x03
-ASN1_OCTET_STRING = 0x04
-ASN1_NULL = 0x05
-ASN1_OBJECT_IDENTIFIER = 0x06
-ASN1_UTF8_STRING = 0x0c
-ASN1_PRINTABLE_STRING = 0x13
-ASN1_IA5_STRING = 0x16
-ASN1_BMP_STRING = 0x1e
-ASN1_SEQUENCE = 0x30
-ASN1_SET = 0x31
-ASN1_IPADDRESS = 0x40
-ASN1_COUNTER32 = 0x41
-ASN1_GAUGE32 = 0x42
-ASN1_TIMETICKS = 0x43
-ASN1_OPAQUE = 0x44
-ASN1_COUNTER64 = 0x46
-ASN1_NO_SUCH_OBJECT = 0x80
-ASN1_NO_SUCH_INSTANCE = 0x81
-ASN1_END_OF_MIB_VIEW = 0x82
-ASN1_GET_REQUEST_PDU = 0xA0
-ASN1_GET_NEXT_REQUEST_PDU = 0xA1
-ASN1_GET_RESPONSE_PDU = 0xA2
-ASN1_SET_REQUEST_PDU = 0xA3
-ASN1_TRAP_REQUEST_PDU = 0xA4
-ASN1_GET_BULK_REQUEST_PDU = 0xA5
-ASN1_INFORM_REQUEST_PDU = 0xA6
-ASN1_SNMPv2_TRAP_REQUEST_PDU = 0xA7
-ASN1_REPORT_REQUEST_PDU = 0xA8
+ASN1_BOOLEAN = const(0x01)
+ASN1_INTEGER = const(0x02)
+ASN1_BIT_STRING = const(0x03)
+ASN1_OCTET_STRING = const(0x04)
+ASN1_NULL = const(0x05)
+ASN1_OBJECT_IDENTIFIER = const(0x06)
+ASN1_UTF8_STRING = const(0x0c)
+ASN1_PRINTABLE_STRING = const(0x13)
+ASN1_IA5_STRING = const(0x16)
+ASN1_BMP_STRING = const(0x1e)
+ASN1_SEQUENCE = const(0x30)
+ASN1_SET = const(0x31)
+ASN1_IPADDRESS = const(0x40)
+ASN1_COUNTER32 = const(0x41)
+ASN1_GAUGE32 = const(0x42)
+ASN1_TIMETICKS = const(0x43)
+ASN1_OPAQUE = const(0x44)
+ASN1_COUNTER64 = const(0x46)
+ASN1_NO_SUCH_OBJECT = const(0x80)
+ASN1_NO_SUCH_INSTANCE = const(0x81)
+ASN1_END_OF_MIB_VIEW = const(0x82)
+ASN1_GET_REQUEST_PDU = const(0xA0)
+ASN1_GET_NEXT_REQUEST_PDU = const(0xA1)
+ASN1_GET_RESPONSE_PDU = const(0xA2)
+ASN1_SET_REQUEST_PDU = const(0xA3)
+ASN1_TRAP_REQUEST_PDU = const(0xA4)
+ASN1_GET_BULK_REQUEST_PDU = const(0xA5)
+ASN1_INFORM_REQUEST_PDU = const(0xA6)
+ASN1_SNMPv2_TRAP_REQUEST_PDU = const(0xA7)
+ASN1_REPORT_REQUEST_PDU = const(0xA8)
 
 # error statuses
-ASN1_ERROR_STATUS_NO_ERROR = 0x00
-ASN1_ERROR_STATUS_TOO_BIG = 0x01
-ASN1_ERROR_STATUS_NO_SUCH_NAME = 0x02
-ASN1_ERROR_STATUS_BAD_VALUE = 0x03
-ASN1_ERROR_STATUS_READ_ONLY = 0x04
-ASN1_ERROR_STATUS_GEN_ERR = 0x05
-ASN1_ERROR_STATUS_WRONG_VALUE = 0x0A
+ASN1_ERROR_STATUS_NO_ERROR = const(0x00)
+ASN1_ERROR_STATUS_TOO_BIG = const(0x01)
+ASN1_ERROR_STATUS_NO_SUCH_NAME = const(0x02)
+ASN1_ERROR_STATUS_BAD_VALUE = const(0x03)
+ASN1_ERROR_STATUS_READ_ONLY = const(0x04)
+ASN1_ERROR_STATUS_GEN_ERR = const(0x05)
+ASN1_ERROR_STATUS_WRONG_VALUE = const(0x0A)
 
 # some ASN.1 opaque special types
-ASN1_CONTEXT = 0x80  # context-specific
-ASN1_EXTENSION_ID = 0x1F  # 0b11111 (fill tag in first octet)
-ASN1_OPAQUE_TAG1 = ASN1_CONTEXT | ASN1_EXTENSION_ID  # 0x9f
-ASN1_OPAQUE_TAG2 = 0x30  # base tag value
-ASN1_APPLICATION = 0x40
-ASN1_APP_FLOAT = ASN1_APPLICATION | 0x08  # application-specific type 0x08
-ASN1_APP_DOUBLE = ASN1_APPLICATION | 0x09  # application-specific type 0x09
-ASN1_APP_INT64 = ASN1_APPLICATION | 0x0A  # application-specific type 0x0A
-ASN1_APP_UINT64 = ASN1_APPLICATION | 0x0B  # application-specific type 0x0B
-ASN1_OPAQUE_FLOAT = ASN1_OPAQUE_TAG2 | ASN1_APP_FLOAT
-ASN1_OPAQUE_DOUBLE = ASN1_OPAQUE_TAG2 | ASN1_APP_DOUBLE
-ASN1_OPAQUE_INT64 = ASN1_OPAQUE_TAG2 | ASN1_APP_INT64
-ASN1_OPAQUE_UINT64 = ASN1_OPAQUE_TAG2 | ASN1_APP_UINT64
-ASN1_OPAQUE_FLOAT_BER_LEN = 7
-ASN1_OPAQUE_DOUBLE_BER_LEN = 11
-ASN1_OPAQUE_INT64_BER_LEN = 4
-ASN1_OPAQUE_UINT64_BER_LEN = 4
+ASN1_CONTEXT = const(0x80)  # context-specific
+ASN1_EXTENSION_ID = const(0x1F)  # 0b11111 (fill tag in first octet)
+ASN1_OPAQUE_TAG1 = const(ASN1_CONTEXT | ASN1_EXTENSION_ID)  # 0x9f
+ASN1_OPAQUE_TAG2 = const(0x30)  # base tag value
+ASN1_APPLICATION = const(0x40)
+# application-specific type 0x08
+ASN1_APP_FLOAT = const(ASN1_APPLICATION | 0x08)
+# application-specific type 0x09
+ASN1_APP_DOUBLE = const(ASN1_APPLICATION | 0x09)
+# application-specific type 0x0A
+ASN1_APP_INT64 = const(ASN1_APPLICATION | 0x0A)
+# application-specific type 0x0B
+ASN1_APP_UINT64 = const(ASN1_APPLICATION | 0x0B)
+ASN1_OPAQUE_FLOAT = const(ASN1_OPAQUE_TAG2 | ASN1_APP_FLOAT)
+ASN1_OPAQUE_DOUBLE = const(ASN1_OPAQUE_TAG2 | ASN1_APP_DOUBLE)
+ASN1_OPAQUE_INT64 = const(ASN1_OPAQUE_TAG2 | ASN1_APP_INT64)
+ASN1_OPAQUE_UINT64 = const(ASN1_OPAQUE_TAG2 | ASN1_APP_UINT64)
+ASN1_OPAQUE_FLOAT_BER_LEN = const(7)
+ASN1_OPAQUE_DOUBLE_BER_LEN = const(11)
+ASN1_OPAQUE_INT64_BER_LEN = const(4)
+ASN1_OPAQUE_UINT64_BER_LEN = const(4)
 
 SNMP_VERSIONS = {
     1: 'v1',
@@ -909,9 +894,11 @@ def craft_response(version, community, request_id, error_status, error_index, oi
 
 def snmp_server(host, port, oids):
     """Main SNMP server loop"""
-    with closing(socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)) as sock:
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_DGRAM)) as sock:
+        logger.debug(sock)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((host, port))
+        ai = socket.getaddrinfo(host, port)
+        sock.bind(ai[0][-1])
         print('SNMP server listening on {}:{}'.format(host, port))
 
         # SNMP server main loop
