@@ -1,79 +1,99 @@
-from micropython import const
-import u_snmp_utils
-import types
-import struct
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+Simple SNMP server in pure Python
+"""
+
+from __future__ import print_function
+
+import argparse
+import fnmatch
+import functools
+import logging
 import socket
 import string
+import struct
 import sys
+import types
 from contextlib import closing
-from io import StringIO
 
+try:
+    from collections import Iterable
+except ImportError:
+    from collections.abc import Iterable
 
-PY3 = const(True)
+try:
+    from StringIO import StringIO
+except ImportError:
+    from io import StringIO
+
+__version__ = '1.0.5'
+
+PY3 = sys.version_info[0] == 3
+
+logging.basicConfig(format='[%(levelname)s] %(message)s')
+logger = logging.getLogger()
+logger.setLevel(logging.WARNING)
 
 # ASN.1 tags
-ASN1_BOOLEAN = const(0x01)
-ASN1_INTEGER = const(0x02)
-ASN1_BIT_STRING = const(0x03)
-ASN1_OCTET_STRING = const(0x04)
-ASN1_NULL = const(0x05)
-ASN1_OBJECT_IDENTIFIER = const(0x06)
-ASN1_UTF8_STRING = const(0x0c)
-ASN1_PRINTABLE_STRING = const(0x13)
-ASN1_IA5_STRING = const(0x16)
-ASN1_BMP_STRING = const(0x1e)
-ASN1_SEQUENCE = const(0x30)
-ASN1_SET = const(0x31)
-ASN1_IPADDRESS = const(0x40)
-ASN1_COUNTER32 = const(0x41)
-ASN1_GAUGE32 = const(0x42)
-ASN1_TIMETICKS = const(0x43)
-ASN1_OPAQUE = const(0x44)
-ASN1_COUNTER64 = const(0x46)
-ASN1_NO_SUCH_OBJECT = const(0x80)
-ASN1_NO_SUCH_INSTANCE = const(0x81)
-ASN1_END_OF_MIB_VIEW = const(0x82)
-ASN1_GET_REQUEST_PDU = const(0xA0)
-ASN1_GET_NEXT_REQUEST_PDU = const(0xA1)
-ASN1_GET_RESPONSE_PDU = const(0xA2)
-ASN1_SET_REQUEST_PDU = const(0xA3)
-ASN1_TRAP_REQUEST_PDU = const(0xA4)
-ASN1_GET_BULK_REQUEST_PDU = const(0xA5)
-ASN1_INFORM_REQUEST_PDU = const(0xA6)
-ASN1_SNMPv2_TRAP_REQUEST_PDU = const(0xA7)
-ASN1_REPORT_REQUEST_PDU = const(0xA8)
+ASN1_BOOLEAN = 0x01
+ASN1_INTEGER = 0x02
+ASN1_BIT_STRING = 0x03
+ASN1_OCTET_STRING = 0x04
+ASN1_NULL = 0x05
+ASN1_OBJECT_IDENTIFIER = 0x06
+ASN1_UTF8_STRING = 0x0c
+ASN1_PRINTABLE_STRING = 0x13
+ASN1_IA5_STRING = 0x16
+ASN1_BMP_STRING = 0x1e
+ASN1_SEQUENCE = 0x30
+ASN1_SET = 0x31
+ASN1_IPADDRESS = 0x40
+ASN1_COUNTER32 = 0x41
+ASN1_GAUGE32 = 0x42
+ASN1_TIMETICKS = 0x43
+ASN1_OPAQUE = 0x44
+ASN1_COUNTER64 = 0x46
+ASN1_NO_SUCH_OBJECT = 0x80
+ASN1_NO_SUCH_INSTANCE = 0x81
+ASN1_END_OF_MIB_VIEW = 0x82
+ASN1_GET_REQUEST_PDU = 0xA0
+ASN1_GET_NEXT_REQUEST_PDU = 0xA1
+ASN1_GET_RESPONSE_PDU = 0xA2
+ASN1_SET_REQUEST_PDU = 0xA3
+ASN1_TRAP_REQUEST_PDU = 0xA4
+ASN1_GET_BULK_REQUEST_PDU = 0xA5
+ASN1_INFORM_REQUEST_PDU = 0xA6
+ASN1_SNMPv2_TRAP_REQUEST_PDU = 0xA7
+ASN1_REPORT_REQUEST_PDU = 0xA8
 
 # error statuses
-ASN1_ERROR_STATUS_NO_ERROR = const(0x00)
-ASN1_ERROR_STATUS_TOO_BIG = const(0x01)
-ASN1_ERROR_STATUS_NO_SUCH_NAME = const(0x02)
-ASN1_ERROR_STATUS_BAD_VALUE = const(0x03)
-ASN1_ERROR_STATUS_READ_ONLY = const(0x04)
-ASN1_ERROR_STATUS_GEN_ERR = const(0x05)
-ASN1_ERROR_STATUS_WRONG_VALUE = const(0x0A)
+ASN1_ERROR_STATUS_NO_ERROR = 0x00
+ASN1_ERROR_STATUS_TOO_BIG = 0x01
+ASN1_ERROR_STATUS_NO_SUCH_NAME = 0x02
+ASN1_ERROR_STATUS_BAD_VALUE = 0x03
+ASN1_ERROR_STATUS_READ_ONLY = 0x04
+ASN1_ERROR_STATUS_GEN_ERR = 0x05
+ASN1_ERROR_STATUS_WRONG_VALUE = 0x0A
 
 # some ASN.1 opaque special types
-ASN1_CONTEXT = const(0x80)  # context-specific
-ASN1_EXTENSION_ID = const(0x1F)  # 0b11111 (fill tag in first octet)
-ASN1_OPAQUE_TAG1 = const(ASN1_CONTEXT | ASN1_EXTENSION_ID)  # 0x9f
-ASN1_OPAQUE_TAG2 = const(0x30)  # base tag value
-ASN1_APPLICATION = const(0x40)
-# application-specific type 0x08
-ASN1_APP_FLOAT = const(ASN1_APPLICATION | 0x08)
-# application-specific type 0x09
-ASN1_APP_DOUBLE = const(ASN1_APPLICATION | 0x09)
-# application-specific type 0x0A
-ASN1_APP_INT64 = const(ASN1_APPLICATION | 0x0A)
-# application-specific type 0x0B
-ASN1_APP_UINT64 = const(ASN1_APPLICATION | 0x0B)
-ASN1_OPAQUE_FLOAT = const(ASN1_OPAQUE_TAG2 | ASN1_APP_FLOAT)
-ASN1_OPAQUE_DOUBLE = const(ASN1_OPAQUE_TAG2 | ASN1_APP_DOUBLE)
-ASN1_OPAQUE_INT64 = const(ASN1_OPAQUE_TAG2 | ASN1_APP_INT64)
-ASN1_OPAQUE_UINT64 = const(ASN1_OPAQUE_TAG2 | ASN1_APP_UINT64)
-ASN1_OPAQUE_FLOAT_BER_LEN = const(7)
-ASN1_OPAQUE_DOUBLE_BER_LEN = const(11)
-ASN1_OPAQUE_INT64_BER_LEN = const(4)
-ASN1_OPAQUE_UINT64_BER_LEN = const(4)
+ASN1_CONTEXT = 0x80  # context-specific
+ASN1_EXTENSION_ID = 0x1F  # 0b11111 (fill tag in first octet)
+ASN1_OPAQUE_TAG1 = ASN1_CONTEXT | ASN1_EXTENSION_ID  # 0x9f
+ASN1_OPAQUE_TAG2 = 0x30  # base tag value
+ASN1_APPLICATION = 0x40
+ASN1_APP_FLOAT = ASN1_APPLICATION | 0x08  # application-specific type 0x08
+ASN1_APP_DOUBLE = ASN1_APPLICATION | 0x09  # application-specific type 0x09
+ASN1_APP_INT64 = ASN1_APPLICATION | 0x0A  # application-specific type 0x0A
+ASN1_APP_UINT64 = ASN1_APPLICATION | 0x0B  # application-specific type 0x0B
+ASN1_OPAQUE_FLOAT = ASN1_OPAQUE_TAG2 | ASN1_APP_FLOAT
+ASN1_OPAQUE_DOUBLE = ASN1_OPAQUE_TAG2 | ASN1_APP_DOUBLE
+ASN1_OPAQUE_INT64 = ASN1_OPAQUE_TAG2 | ASN1_APP_INT64
+ASN1_OPAQUE_UINT64 = ASN1_OPAQUE_TAG2 | ASN1_APP_UINT64
+ASN1_OPAQUE_FLOAT_BER_LEN = 7
+ASN1_OPAQUE_DOUBLE_BER_LEN = 11
+ASN1_OPAQUE_INT64_BER_LEN = 4
+ASN1_OPAQUE_UINT64_BER_LEN = 4
 
 SNMP_VERSIONS = {
     1: 'v1',
@@ -171,7 +191,7 @@ def timeticks_to_str(ticks):
     minutes, rem3 = divmod(rem2, 60 * 100)
     seconds, milliseconds = divmod(rem3, 100)
     ending = 's' if days > 1 else ''
-    days_fmt = "{} day{}, ".format(days, ending) if days > 0 else ""
+    days_fmt = '{} day{}, '.format(days, ending) if days > 0 else ''
     return '{}{:-02}:{:-02}:{:-02}.{:-02}'.format(days_fmt, hours, minutes, seconds, milliseconds)
 
 
@@ -275,7 +295,7 @@ def _parse_asn1_opaque_float(stream):
     value = _read_int_len(stream, length, signed=True)
     # convert int to float
     float_value = struct.unpack('>f', struct.pack('>l', value))[0]
-    # logger.debug('ASN1_OPAQUE_FLOAT: %s', round(float_value, 5))
+    logger.debug('ASN1_OPAQUE_FLOAT: %s', round(float_value, 5))
     return 'FLOAT', round(float_value, 5)
 
 
@@ -285,7 +305,7 @@ def _parse_asn1_opaque_double(stream):
     value = _read_int_len(stream, length, signed=True)
     # convert long long to double
     double_value = struct.unpack('>d', struct.pack('>q', value))[0]
-    # logger.debug('ASN1_OPAQUE_DOUBLE: %s', round(double_value, 5))
+    logger.debug('ASN1_OPAQUE_DOUBLE: %s', round(double_value, 5))
     return 'DOUBLE', round(double_value, 5)
 
 
@@ -293,7 +313,7 @@ def _parse_asn1_opaque_int64(stream):
     """Parse ASN.1 opaque int64"""
     length = _parse_asn1_length(stream)
     value = _read_int_len(stream, length, signed=True)
-    # logger.debug('ASN1_OPAQUE_INT64: %s', value)
+    logger.debug('ASN1_OPAQUE_INT64: %s', value)
     return 'INT64', value
 
 
@@ -301,7 +321,7 @@ def _parse_asn1_opaque_uint64(stream):
     """Parse ASN.1 opaque uint64"""
     length = _parse_asn1_length(stream)
     value = _read_int_len(stream, length)
-    # logger.debug('ASN1_OPAQUE_UINT64: %s', value)
+    logger.debug('ASN1_OPAQUE_UINT64: %s', value)
     return 'UINT64', value
 
 
@@ -387,63 +407,63 @@ def _parse_snmp_asn1(stream):
                 'Invalid tag for PDU unit "{}"'.format(SNMP_PDUS[pdu_index]))
         if tag == ASN1_SEQUENCE:
             length = _parse_asn1_length(stream)
-            # logger.debug('ASN1_SEQUENCE: %s', 'length = {}'.format(length))
+            logger.debug('ASN1_SEQUENCE: %s', 'length = {}'.format(length))
         elif tag == ASN1_INTEGER:
             length = _read_byte(stream)
             value = _read_int_len(stream, length, True)
-            # logger.debug('ASN1_INTEGER: %s', value)
+            logger.debug('ASN1_INTEGER: %s', value)
             # pdu_index is version, request-id, error-status, error-index
             if wait_oid_value or pdu_index in [1, 4, 5, 6] or _is_trap_request(result):
                 result.append(('INTEGER', value))
                 wait_oid_value = False
         elif tag == ASN1_OCTET_STRING:
             value = _parse_asn1_octet_string(stream)
-            # logger.debug('ASN1_OCTET_STRING: %s', value)
+            logger.debug('ASN1_OCTET_STRING: %s', value)
             if wait_oid_value or pdu_index == 2:  # community
                 result.append(('STRING', value))
                 wait_oid_value = False
         elif tag == ASN1_OBJECT_IDENTIFIER:
             length = _read_byte(stream)
             value = stream.read(length)
-            # logger.debug('ASN1_OBJECT_IDENTIFIER: %s', bytes_to_oid(value))
+            logger.debug('ASN1_OBJECT_IDENTIFIER: %s', bytes_to_oid(value))
             result.append(('OID', bytes_to_oid(value)))
             wait_oid_value = True
         elif tag == ASN1_PRINTABLE_STRING:
             length = _parse_asn1_length(stream)
             value = stream.read(length)
-            # logger.debug('ASN1_PRINTABLE_STRING: %s', value)
+            logger.debug('ASN1_PRINTABLE_STRING: %s', value)
         elif tag == ASN1_GET_REQUEST_PDU:
             length = _parse_asn1_length(stream)
-            # logger.debug('ASN1_GET_REQUEST_PDU: %s',
-            #             'length = {}'.format(length))
+            logger.debug('ASN1_GET_REQUEST_PDU: %s',
+                         'length = {}'.format(length))
             if pdu_index == 3:  # PDU-type
                 result.append(('ASN1_GET_REQUEST_PDU', tag))
         elif tag == ASN1_GET_NEXT_REQUEST_PDU:
             length = _parse_asn1_length(stream)
-            # logger.debug('ASN1_GET_NEXT_REQUEST_PDU: %s',
-            #            'length = {}'.format(length))
+            logger.debug('ASN1_GET_NEXT_REQUEST_PDU: %s',
+                         'length = {}'.format(length))
             if pdu_index == 3:  # PDU-type
                 result.append(('ASN1_GET_NEXT_REQUEST_PDU', tag))
         elif tag == ASN1_GET_BULK_REQUEST_PDU:
             length = _parse_asn1_length(stream)
-            # logger.debug('ASN1_GET_BULK_REQUEST_PDU: %s',
-            #            'length = {}'.format(length))
+            logger.debug('ASN1_GET_BULK_REQUEST_PDU: %s',
+                         'length = {}'.format(length))
             if pdu_index == 3:  # PDU-type
                 result.append(('ASN1_GET_BULK_REQUEST_PDU', tag))
         elif tag == ASN1_GET_RESPONSE_PDU:
             length = _parse_asn1_length(stream)
-            # logger.debug('ASN1_GET_RESPONSE_PDU: %s',
-            #            'length = {}'.format(length))
+            logger.debug('ASN1_GET_RESPONSE_PDU: %s',
+                         'length = {}'.format(length))
         elif tag == ASN1_SET_REQUEST_PDU:
             length = _parse_asn1_length(stream)
-            # logger.debug('ASN1_SET_REQUEST_PDU: %s',
-            #            'length = {}'.format(length))
+            logger.debug('ASN1_SET_REQUEST_PDU: %s',
+                         'length = {}'.format(length))
             if pdu_index == 3:  # PDU-type
                 result.append(('ASN1_SET_REQUEST_PDU', tag))
         elif tag == ASN1_TRAP_REQUEST_PDU:
             length = _parse_asn1_length(stream)
-            # logger.debug('ASN1_TRAP_REQUEST_PDU: %s',
-            #            'length = {}'.format(length))
+            logger.debug('ASN1_TRAP_REQUEST_PDU: %s',
+                         'length = {}'.format(length))
             if pdu_index == 3:  # PDU-type
                 result.append(('ASN1_TRAP_REQUEST_PDU', tag))
         elif tag == ASN1_INFORM_REQUEST_PDU:
@@ -451,8 +471,8 @@ def _parse_snmp_asn1(stream):
                 raise Exception(
                     'INFORM request PDU is not supported in SNMPv1!')
             length = _parse_asn1_length(stream)
-            # logger.debug('ASN1_INFORM_REQUEST_PDU: %s',
-            #            'length = {}'.format(length))
+            logger.debug('ASN1_INFORM_REQUEST_PDU: %s',
+                         'length = {}'.format(length))
             if pdu_index == 3:  # PDU-type
                 result.append(('ASN1_INFORM_REQUEST_PDU', tag))
         elif tag == ASN1_SNMPv2_TRAP_REQUEST_PDU:
@@ -460,8 +480,8 @@ def _parse_snmp_asn1(stream):
                 raise Exception(
                     'SNMPv2 TRAP PDU request is not supported in SNMPv1!')
             length = _parse_asn1_length(stream)
-            # logger.debug('ASN1_SNMPv2_TRAP_REQUEST_PDU: %s',
-            #            'length = {}'.format(length))
+            logger.debug('ASN1_SNMPv2_TRAP_REQUEST_PDU: %s',
+                         'length = {}'.format(length))
             if pdu_index == 3:  # PDU-type
                 result.append(('ASN1_SNMPv2_TRAP_REQUEST_PDU', tag))
         elif tag == ASN1_REPORT_REQUEST_PDU:
@@ -469,63 +489,62 @@ def _parse_snmp_asn1(stream):
         elif tag == ASN1_TIMETICKS:
             length = _read_byte(stream)
             value = _read_int_len(stream, length)
-            # logger.debug('ASN1_TIMETICKS: %s (%s)',
-            #            value, timeticks_to_str(value))
+            logger.debug('ASN1_TIMETICKS: %s (%s)',
+                         value, timeticks_to_str(value))
             if wait_oid_value or _is_trap_request(result):
                 result.append(('TIMETICKS', value))
                 wait_oid_value = False
         elif tag == ASN1_IPADDRESS:
             length = _read_byte(stream)
             value = _read_int_len(stream, length)
-            # logger.debug('ASN1_IPADDRESS: %s (%s)', value, int_to_ip(value))
+            logger.debug('ASN1_IPADDRESS: %s (%s)', value, int_to_ip(value))
             if wait_oid_value or _is_trap_request(result):
                 result.append(('IPADDRESS', int_to_ip(value)))
                 wait_oid_value = False
         elif tag == ASN1_COUNTER32:
             length = _read_byte(stream)
             value = _read_int_len(stream, length)
-            # logger.debug('ASN1_COUNTER32: %s', value)
+            logger.debug('ASN1_COUNTER32: %s', value)
             if wait_oid_value:
                 result.append(('COUNTER32', value))
                 wait_oid_value = False
         elif tag == ASN1_GAUGE32:
             length = _read_byte(stream)
             value = _read_int_len(stream, length)
-            # logger.debug('ASN1_GAUGE32: %s', value)
+            logger.debug('ASN1_GAUGE32: %s', value)
             if wait_oid_value:
                 result.append(('GAUGE32', value))
                 wait_oid_value = False
         elif tag == ASN1_OPAQUE:
             value = _parse_asn1_opaque(stream)
-            # logger.debug('ASN1_OPAQUE: %r', value)
+            logger.debug('ASN1_OPAQUE: %r', value)
             if wait_oid_value:
                 result.append(('OPAQUE', value))
                 wait_oid_value = False
         elif tag == ASN1_COUNTER64:
             length = _read_byte(stream)
             value = _read_int_len(stream, length)
-            # logger.debug('ASN1_COUNTER64: %s', value)
+            logger.debug('ASN1_COUNTER64: %s', value)
             if wait_oid_value:
                 result.append(('COUNTER64', value))
                 wait_oid_value = False
         elif tag == ASN1_NULL:
             value = _read_byte(stream)
-            # logger.debug('ASN1_NULL: %s', value)
+            logger.debug('ASN1_NULL: %s', value)
         elif tag == ASN1_NO_SUCH_OBJECT:
             value = _read_byte(stream)
-            # logger.debug('ASN1_NO_SUCH_OBJECT: %s', value)
+            logger.debug('ASN1_NO_SUCH_OBJECT: %s', value)
             result.append('No Such Object')
         elif tag == ASN1_NO_SUCH_INSTANCE:
             value = _read_byte(stream)
-            # logger.debug('ASN1_NO_SUCH_INSTANCE: %s', value)
+            logger.debug('ASN1_NO_SUCH_INSTANCE: %s', value)
             result.append('No Such Instance with OID')
         elif tag == ASN1_END_OF_MIB_VIEW:
             value = _read_byte(stream)
-            # logger.debug('ASN1_END_OF_MIB_VIEW: %s', value)
+            logger.debug('ASN1_END_OF_MIB_VIEW: %s', value)
             return ('', ''), ('', '')
         else:
-            pass
-            # logger.debug('?: %s', hex(ord(read_byte)))
+            logger.debug('?: %s', hex(ord(read_byte)))
         pdu_index += 1
 
 
@@ -559,7 +578,7 @@ def boolean(value):
 
 def integer(value, enum=None):
     """Get Integer"""
-    if enum and isinstance(enum, list) and value not in enum:
+    if enum and isinstance(enum, Iterable) and value not in enum:
         raise WrongValueError(
             'Integer value {} is outside the range of enum values'.format(value))
     if not (-2147483648 <= value <= 2147483647):
@@ -709,7 +728,7 @@ def oid_cmp(oid1, oid2):
 
 def get_next(oids, oid):
     """Get next OID from the OIDs list"""
-    for val in sorted(oids, key=u_snmp_utils.cmp_to_key(oid_cmp)):
+    for val in sorted(oids, key=functools.cmp_to_key(oid_cmp)):
         # return first if compared with empty oid
         if not oid:
             return val
@@ -743,7 +762,7 @@ def find_oid_and_value_with_wildcard(oids, oid):
     wildcard_keys = [x for x in oids.keys() if '*' in x or '?' in x]
     out = []
     for wck in wildcard_keys:
-        if u_snmp_utils.filter([oid], wck):
+        if fnmatch.filter([oid], wck):
             value = oids[wck](oid)
             out.append((wck, value,))
     return out
@@ -764,9 +783,8 @@ def handle_get_request(oids, oid):
         # now check wildcards
         results = find_oid_and_value_with_wildcard(oids, oid)
         if len(results) > 1:
-           # logger.warning(
-            #    'Several results found with wildcards for OID: %s', oid)
-            pass
+            logger.warning(
+                'Several results found with wildcards for OID: %s', oid)
         if results:
             _, oid_value = results[0]
             if oid_value:
@@ -793,9 +811,8 @@ def handle_get_next_request(oids, oid):
         # now check wildcards
         results = find_oid_and_value_with_wildcard(oids, oid)
         if len(results) > 1:
-            # logger.warning(
-            #   'Several results found with wildcards for OID: %s', oid)
-            pass
+            logger.warning(
+                'Several results found with wildcards for OID: %s', oid)
         if results:
             # if found several results get first one
             oid_key, oid_value = results[0]
@@ -907,7 +924,7 @@ def snmp_server(host, port, oids):
             try:
                 request_result = _parse_snmp_asn1(request_stream)
             except ProtocolError as ex:
-                # logger.error('SNMP request parsing failed: %s', ex)
+                logger.error('SNMP request parsing failed: %s', ex)
                 continue
 
             # get required fields from request
@@ -948,7 +965,7 @@ def snmp_server(host, port, oids):
                 oid_items.append((oid_to_bytes(oid), oid_value))
             elif pdu_type == ASN1_GET_BULK_REQUEST_PDU:
                 max_repetitions = request_result[5][1]
-                # logger.debug('max_repetitions: %i', max_repetitions)
+                logger.debug('max_repetitions: %i', max_repetitions)
                 requested_oids = request_result[6:]
                 for _ in range(0, max_repetitions):
                     for idx, val in enumerate(requested_oids):
@@ -977,11 +994,11 @@ def snmp_server(host, port, oids):
                     error_status, error_index, oid_value = handle_set_request(
                         oids, oid, type_and_value)
                 except WrongValueError as ex:
-                    # logger.error(ex)
+                    logger.error(ex)
                     error_status = ASN1_ERROR_STATUS_WRONG_VALUE
                     error_index = 0
                 except Exception as ex:
-                    # logger.error(ex)
+                    logger.error(ex)
                     error_status = ASN1_ERROR_STATUS_BAD_VALUE
                     error_index = 0
                 # if oid value is a function - call it to get the value
@@ -1014,11 +1031,56 @@ def snmp_server(host, port, oids):
             # craft SNMP response
             response = craft_response(
                 version, community, request_id, error_status, error_index, oid_items)
-            # logger.debug('Sending %d bytes of response', len(response))
+            logger.debug('Sending %d bytes of response', len(response))
             try:
                 sock.sendto(response, address)
             except socket.error as ex:
-                # logger.error(
-                #   'Failed to send %d bytes of response: %s', len(response), ex)
-                pass
-            # logger.debug('')
+                logger.error(
+                    'Failed to send %d bytes of response: %s', len(response), ex)
+            logger.debug('')
+
+
+def main():
+    """Main"""
+    parser = argparse.ArgumentParser(description='SNMP server')
+    parser.add_argument(
+        '-p', '--port', dest='port', type=int,
+        help='port (by default 161 - requires root privileges)', default=161, required=False)
+    parser.add_argument(
+        '-c', '--config', type=str,
+        help='OIDs config file', required=False)
+    parser.add_argument(
+        '-d', '--debug',
+        help='run in debug mode', action='store_true')
+    parser.add_argument(
+        '-v', '--version', action='version',
+        version='SNMP server v{}'.format(__version__))
+
+    args = parser.parse_args()
+
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+
+    # work as an echo server if no config is passed
+    oids = {
+        '*': lambda oid: octet_string(oid),
+    }
+    # read a config
+    config_filename = args.config
+    if config_filename:
+        try:
+            oids = parse_config(config_filename)
+        except ConfigError as ex:
+            logger.error(ex)
+            sys.exit(-1)
+
+    host = '0.0.0.0'
+    port = args.port
+    try:
+        snmp_server(host, port, oids)
+    except KeyboardInterrupt:
+        logger.debug('Interrupted by Ctrl+C')
+
+
+if __name__ == '__main__':
+    main()
